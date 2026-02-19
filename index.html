@@ -681,8 +681,8 @@
 <!-- API Key Modal -->
 <div class="key-modal-overlay" id="keyModal">
   <div class="key-modal">
-    <h2>The Voice Requires a Key</h2>
-    <p>Enter your <a href="https://elevenlabs.io" target="_blank" rel="noopener">ElevenLabs</a> API key to unlock the sacred voice. Stored locally in your browser only.</p>
+    <h2>Upgrade the Voice</h2>
+    <p>For a richer, more human voice, enter your <a href="https://elevenlabs.io" target="_blank" rel="noopener">ElevenLabs</a> API key. Free tier works. Stored locally in your browser only.</p>
     <input type="password" class="key-input" id="keyInput" placeholder="xi-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off">
     <br>
     <button class="key-submit" id="keySubmit">Consecrate</button>
@@ -690,7 +690,7 @@
   </div>
 </div>
 
-<button class="change-key" id="changeKey">Change Voice Key</button>
+<button class="change-key" id="changeKey">Upgrade Voice</button>
 
 <script>
 const prayerData = [
@@ -747,7 +747,7 @@ prayerData.forEach((item, i) => {
   prayerText.appendChild(el);
 });
 
-// === ElevenLabs TTS ===
+// === TTS Engine (Browser fallback + optional ElevenLabs) ===
 const btn = document.getElementById('invokeBtn');
 const btnLabel = btn.querySelector('.btn-label');
 const btnIcon = btn.querySelector('.btn-icon');
@@ -761,8 +761,10 @@ const keyError = document.getElementById('keyError');
 const changeKeyBtn = document.getElementById('changeKey');
 
 let playing = false;
+let cancelled = false;
 let currentAudio = null;
-let audioCache = null; // cache the generated audio blob
+let audioCache = null;
+const synth = window.speechSynthesis;
 
 // ElevenLabs voice: "George" — deep British narrator
 const VOICE_ID = 'JBFqnCBsd6RMkjVDRZzb';
@@ -772,18 +774,19 @@ const speakableLines = elements.filter(e =>
   e.item.type === 'amen' || e.item.type === 'amen-small' || e.item.type === 'closing'
 );
 
-// Build the full speech text with line breaks for pacing
+// Build the full speech text for ElevenLabs
 const speechText = speakableLines.map(e => e.item.speech || e.item.text).join('\n');
 
-// Character offsets for each line (used to sync text reveal to audio progress)
+// Character offsets for ElevenLabs audio sync
 const lineCharOffsets = [];
-let offset = 0;
+let charOffset = 0;
 speakableLines.forEach(e => {
-  lineCharOffsets.push(offset);
-  offset += (e.item.speech || e.item.text).length + 1; // +1 for \n
+  lineCharOffsets.push(charOffset);
+  charOffset += (e.item.speech || e.item.text).length + 1;
 });
-const totalChars = offset;
+const totalChars = charOffset;
 
+// --- API Key management ---
 function getApiKey() {
   return localStorage.getItem('elevenlabs_api_key') || '';
 }
@@ -803,29 +806,25 @@ function hideKeyModal() {
   keyModal.classList.remove('visible');
 }
 
-// Validate key by fetching user info
 async function validateKey(key) {
   try {
     const res = await fetch('https://api.elevenlabs.io/v1/user', {
       headers: { 'xi-api-key': key.trim() }
     });
     return res.ok;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
 keySubmit.addEventListener('click', async () => {
   const key = keyInput.value.trim();
   if (!key) return;
-
   keySubmit.textContent = 'Verifying…';
   const valid = await validateKey(key);
   keySubmit.textContent = 'Consecrate';
-
   if (valid) {
     setApiKey(key);
-    audioCache = null; // clear cache when key changes
+    audioCache = null;
+    changeKeyBtn.textContent = 'Change Voice Key';
     hideKeyModal();
   } else {
     keyError.style.display = 'block';
@@ -838,9 +837,13 @@ keyInput.addEventListener('keydown', (e) => {
 
 changeKeyBtn.addEventListener('click', showKeyModal);
 
+// Update button label on load
+if (getApiKey()) changeKeyBtn.textContent = 'Change Voice Key';
+
+// --- Shared helpers ---
 function spawnParticles() {
   const bg = document.querySelector('.cathedral-bg');
-  if (bg.querySelectorAll('.particle').length > 0) return; // already spawned
+  if (bg.querySelectorAll('.particle').length > 0) return;
   for (let i = 0; i < 30; i++) {
     const p = document.createElement('div');
     p.className = 'particle';
@@ -853,141 +856,151 @@ function spawnParticles() {
   }
 }
 
-async function generateAudio(apiKey) {
-  const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`, {
-    method: 'POST',
-    headers: {
-      'xi-api-key': apiKey,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      text: speechText,
-      model_id: 'eleven_multilingual_v2',
-      voice_settings: {
-        stability: 0.55,
-        similarity_boost: 0.78,
-        style: 0.35,
-        use_speaker_boost: true,
-      }
-    }),
-  });
-
-  if (!res.ok) {
-    if (res.status === 401) {
-      localStorage.removeItem('elevenlabs_api_key');
-      throw new Error('invalid_key');
-    }
-    throw new Error('api_error');
-  }
-
-  return await res.blob();
+function activateAmbience() {
+  scroll.classList.add('visible');
+  btn.classList.add('speaking');
+  beams.forEach(b => b.classList.add('active'));
+  candles.classList.add('lit');
+  spawnParticles();
+  elements.forEach(e => e.el.classList.remove('revealed', 'speaking-now'));
 }
 
-function syncTextToAudio(audio) {
-  // Reveal ornaments and breaks immediately
+function resetBtn() {
+  playing = false;
+  btn.classList.remove('speaking');
+  btnLabel.textContent = 'Invoke';
+  btnLabel.classList.remove('generating');
+  btnIcon.textContent = '✦';
+}
+
+// --- Browser Speech (fallback) ---
+function getBritishVoice() {
+  const voices = synth.getVoices();
+  const names = ['Daniel', 'Oliver', 'Malcolm', 'Arthur'];
+  for (const name of names) {
+    const v = voices.find(v => v.name.includes(name) && v.lang.includes('en-GB'));
+    if (v) return v;
+  }
+  const gb = voices.find(v => v.lang === 'en-GB' || v.lang === 'en_GB');
+  if (gb) return gb;
+  for (const name of names) {
+    const v = voices.find(v => v.name.includes(name) && v.lang.startsWith('en'));
+    if (v) return v;
+  }
+  return voices.find(v => v.lang.startsWith('en')) || voices[0];
+}
+
+function speakWithBrowser() {
+  const voice = getBritishVoice();
+  let lineIndex = 0;
+  cancelled = false;
+
   elements.forEach(e => {
     if (e.item.type === 'ornament' || e.item.type === 'break') {
       e.el.classList.add('revealed');
     }
   });
 
+  function speakNext() {
+    if (cancelled || lineIndex >= speakableLines.length) {
+      if (lineIndex > 0) speakableLines[lineIndex - 1].el.classList.remove('speaking-now');
+      resetBtn();
+      return;
+    }
+    if (lineIndex > 0) speakableLines[lineIndex - 1].el.classList.remove('speaking-now');
+
+    const current = speakableLines[lineIndex];
+    current.el.classList.add('revealed', 'speaking-now');
+
+    // Pause after line
+    let pauseAfter = 400;
+    if (current.item.type === 'invocation') pauseAfter = 800;
+    if (current.item.type === 'amen-small') pauseAfter = 1200;
+    if (current.item.type === 'amen') pauseAfter = 0;
+    if (current.item.type === 'closing') pauseAfter = 600;
+    const fullIdx = elements.indexOf(current);
+    if (fullIdx < elements.length - 1 && elements[fullIdx + 1].item.type === 'break') pauseAfter = 1400;
+
+    const utter = new SpeechSynthesisUtterance(current.item.speech || current.item.text);
+    if (voice) utter.voice = voice;
+    utter.rate = 0.92;
+    utter.pitch = 0.95;
+
+    utter.onend = () => {
+      if (cancelled) return;
+      lineIndex++;
+      if (pauseAfter > 0) setTimeout(speakNext, pauseAfter);
+      else speakNext();
+    };
+    utter.onerror = () => { if (!cancelled) { lineIndex++; speakNext(); } };
+
+    synth.speak(utter);
+  }
+
+  speakNext();
+}
+
+// --- ElevenLabs TTS ---
+async function generateAudio(apiKey) {
+  const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`, {
+    method: 'POST',
+    headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text: speechText,
+      model_id: 'eleven_multilingual_v2',
+      voice_settings: { stability: 0.55, similarity_boost: 0.78, style: 0.35, use_speaker_boost: true }
+    }),
+  });
+  if (!res.ok) {
+    if (res.status === 401) { localStorage.removeItem('elevenlabs_api_key'); throw new Error('invalid_key'); }
+    throw new Error('api_error');
+  }
+  return await res.blob();
+}
+
+function syncTextToAudio(audio) {
+  elements.forEach(e => {
+    if (e.item.type === 'ornament' || e.item.type === 'break') e.el.classList.add('revealed');
+  });
+
   let currentLine = -1;
 
   function onTimeUpdate() {
     if (!audio.duration) return;
-    const progress = audio.currentTime / audio.duration;
-    const charPos = progress * totalChars;
-
-    // Find which line we're on based on character position
+    const charPos = (audio.currentTime / audio.duration) * totalChars;
     let newLine = 0;
     for (let i = 0; i < lineCharOffsets.length; i++) {
-      if (charPos >= lineCharOffsets[i]) {
-        newLine = i;
-      }
+      if (charPos >= lineCharOffsets[i]) newLine = i;
     }
-
     if (newLine !== currentLine) {
-      // Un-highlight previous
-      if (currentLine >= 0 && currentLine < speakableLines.length) {
-        speakableLines[currentLine].el.classList.remove('speaking-now');
-      }
+      if (currentLine >= 0) speakableLines[currentLine].el.classList.remove('speaking-now');
       currentLine = newLine;
-      // Reveal and highlight all lines up to current (in case we skipped)
-      for (let i = 0; i <= currentLine; i++) {
-        speakableLines[i].el.classList.add('revealed');
-      }
+      for (let i = 0; i <= currentLine; i++) speakableLines[i].el.classList.add('revealed');
       speakableLines[currentLine].el.classList.add('speaking-now');
     }
   }
 
   audio.addEventListener('timeupdate', onTimeUpdate);
-
   audio.addEventListener('ended', () => {
     audio.removeEventListener('timeupdate', onTimeUpdate);
-    // Reveal everything and remove highlights
-    speakableLines.forEach(e => {
-      e.el.classList.add('revealed');
-      e.el.classList.remove('speaking-now');
-    });
-    playing = false;
+    speakableLines.forEach(e => { e.el.classList.add('revealed'); e.el.classList.remove('speaking-now'); });
     currentAudio = null;
-    btn.classList.remove('speaking');
-    btnLabel.textContent = 'Invoke';
-    btnLabel.classList.remove('generating');
-    btnIcon.textContent = '✦';
+    resetBtn();
   });
 }
 
-async function beginPrayer() {
-  // If playing, stop
-  if (playing && currentAudio) {
-    currentAudio.pause();
-    currentAudio.currentTime = 0;
-    playing = false;
-    currentAudio = null;
-    btn.classList.remove('speaking');
-    btnLabel.textContent = 'Invoke';
-    btnLabel.classList.remove('generating');
-    btnIcon.textContent = '✦';
-    return;
-  }
-
-  // Check for API key
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    showKeyModal();
-    return;
-  }
-
-  // Activate ambience
-  scroll.classList.add('visible');
-  btn.classList.add('speaking');
-  beams.forEach(b => b.classList.add('active'));
-  candles.classList.add('lit');
-  spawnParticles();
-
-  // Reset lines
-  elements.forEach(e => {
-    e.el.classList.remove('revealed', 'speaking-now');
-  });
-
-  // Show generating state
+async function speakWithElevenLabs(apiKey) {
   btnLabel.textContent = 'Praying';
   btnLabel.classList.add('generating');
   btnIcon.textContent = '◈';
 
   try {
-    // Use cached audio or generate new
     let blob = audioCache;
-    if (!blob) {
-      blob = await generateAudio(apiKey);
-      audioCache = blob;
-    }
+    if (!blob) { blob = await generateAudio(apiKey); audioCache = blob; }
 
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     currentAudio = audio;
-    playing = true;
 
     btnLabel.textContent = 'Cease';
     btnLabel.classList.remove('generating');
@@ -995,23 +1008,41 @@ async function beginPrayer() {
 
     syncTextToAudio(audio);
     audio.play();
-
   } catch (err) {
-    btn.classList.remove('speaking');
-    btnLabel.textContent = 'Invoke';
-    btnLabel.classList.remove('generating');
-    btnIcon.textContent = '✦';
+    resetBtn();
+    if (err.message === 'invalid_key') { showKeyModal(); keyError.style.display = 'block'; }
+    else console.error('ElevenLabs error:', err);
+  }
+}
 
-    if (err.message === 'invalid_key') {
-      showKeyModal();
-      keyError.style.display = 'block';
-    } else {
-      console.error('ElevenLabs error:', err);
-    }
+// --- Main handler ---
+async function beginPrayer() {
+  // Stop if already playing
+  if (playing) {
+    if (currentAudio) { currentAudio.pause(); currentAudio.currentTime = 0; currentAudio = null; }
+    cancelled = true;
+    synth.cancel();
+    resetBtn();
+    return;
+  }
+
+  playing = true;
+  activateAmbience();
+
+  const apiKey = getApiKey();
+  if (apiKey) {
+    await speakWithElevenLabs(apiKey);
+  } else {
+    btnLabel.textContent = 'Cease';
+    btnIcon.textContent = '✦';
+    setTimeout(() => speakWithBrowser(), 800);
   }
 }
 
 btn.addEventListener('click', beginPrayer);
+
+// Ensure browser voices load
+if (synth) { synth.getVoices(); synth.onvoiceschanged = () => synth.getVoices(); }
 </script>
 </body>
 </html>
