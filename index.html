@@ -764,6 +764,7 @@ let playing = false;
 let cancelled = false;
 let currentAudio = null;
 let audioCache = null;
+let browserSpeechTimeout = null;
 const synth = window.speechSynthesis;
 
 // ElevenLabs voice: "George" — deep British narrator
@@ -998,6 +999,8 @@ async function speakWithElevenLabs(apiKey) {
     let blob = audioCache;
     if (!blob) { blob = await generateAudio(apiKey); audioCache = blob; }
 
+    if (cancelled) { resetBtn(); return; }
+
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     currentAudio = audio;
@@ -1021,12 +1024,14 @@ async function beginPrayer() {
   if (playing) {
     if (currentAudio) { currentAudio.pause(); currentAudio.currentTime = 0; currentAudio = null; }
     cancelled = true;
+    if (browserSpeechTimeout) { clearTimeout(browserSpeechTimeout); browserSpeechTimeout = null; }
     synth.cancel();
     resetBtn();
     return;
   }
 
   playing = true;
+  cancelled = false;
   activateAmbience();
 
   const apiKey = getApiKey();
@@ -1035,7 +1040,7 @@ async function beginPrayer() {
   } else {
     btnLabel.textContent = 'Cease';
     btnIcon.textContent = '✦';
-    setTimeout(() => speakWithBrowser(), 800);
+    browserSpeechTimeout = setTimeout(() => { browserSpeechTimeout = null; speakWithBrowser(); }, 800);
   }
 }
 
