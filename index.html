@@ -761,10 +761,10 @@ const keyError = document.getElementById('keyError');
 const changeKeyBtn = document.getElementById('changeKey');
 
 let playing = false;
-let cancelled = false;
 let currentAudio = null;
 let audioCache = null;
 let browserSpeechTimeout = null;
+let sessionId = 0;
 const synth = window.speechSynthesis;
 
 // ElevenLabs voice: "George" — deep British narrator
@@ -891,10 +891,9 @@ function getBritishVoice() {
   return voices.find(v => v.lang.startsWith('en')) || voices[0];
 }
 
-function speakWithBrowser() {
+function speakWithBrowser(mySession) {
   const voice = getBritishVoice();
   let lineIndex = 0;
-  cancelled = false;
 
   elements.forEach(e => {
     if (e.item.type === 'ornament' || e.item.type === 'break') {
@@ -903,9 +902,11 @@ function speakWithBrowser() {
   });
 
   function speakNext() {
-    if (cancelled || lineIndex >= speakableLines.length) {
-      if (lineIndex > 0) speakableLines[lineIndex - 1].el.classList.remove('speaking-now');
-      resetBtn();
+    if (mySession !== sessionId || lineIndex >= speakableLines.length) {
+      if (mySession === sessionId) {
+        if (lineIndex > 0) speakableLines[lineIndex - 1].el.classList.remove('speaking-now');
+        resetBtn();
+      }
       return;
     }
     if (lineIndex > 0) speakableLines[lineIndex - 1].el.classList.remove('speaking-now');
@@ -928,12 +929,12 @@ function speakWithBrowser() {
     utter.pitch = 0.95;
 
     utter.onend = () => {
-      if (cancelled) return;
+      if (mySession !== sessionId) return;
       lineIndex++;
       if (pauseAfter > 0) setTimeout(speakNext, pauseAfter);
       else speakNext();
     };
-    utter.onerror = () => { if (!cancelled) { lineIndex++; speakNext(); } };
+    utter.onerror = () => { if (mySession === sessionId) { lineIndex++; speakNext(); } };
 
     synth.speak(utter);
   }
@@ -990,7 +991,7 @@ function syncTextToAudio(audio) {
   });
 }
 
-async function speakWithElevenLabs(apiKey) {
+async function speakWithElevenLabs(apiKey, mySession) {
   btnLabel.textContent = 'Praying';
   btnLabel.classList.add('generating');
   btnIcon.textContent = '◈';
@@ -999,7 +1000,7 @@ async function speakWithElevenLabs(apiKey) {
     let blob = audioCache;
     if (!blob) { blob = await generateAudio(apiKey); audioCache = blob; }
 
-    if (cancelled) { resetBtn(); return; }
+    if (mySession !== sessionId) { return; }
 
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
@@ -1012,6 +1013,7 @@ async function speakWithElevenLabs(apiKey) {
     syncTextToAudio(audio);
     audio.play();
   } catch (err) {
+    if (mySession !== sessionId) return;
     resetBtn();
     if (err.message === 'invalid_key') { showKeyModal(); keyError.style.display = 'block'; }
     else console.error('ElevenLabs error:', err);
@@ -1022,8 +1024,8 @@ async function speakWithElevenLabs(apiKey) {
 async function beginPrayer() {
   // Stop if already playing
   if (playing) {
+    sessionId++;
     if (currentAudio) { currentAudio.pause(); currentAudio.currentTime = 0; currentAudio = null; }
-    cancelled = true;
     if (browserSpeechTimeout) { clearTimeout(browserSpeechTimeout); browserSpeechTimeout = null; }
     synth.cancel();
     resetBtn();
@@ -1031,16 +1033,18 @@ async function beginPrayer() {
   }
 
   playing = true;
-  cancelled = false;
+  sessionId++;
+  const mySession = sessionId;
+  synth.cancel();
   activateAmbience();
 
   const apiKey = getApiKey();
   if (apiKey) {
-    await speakWithElevenLabs(apiKey);
+    await speakWithElevenLabs(apiKey, mySession);
   } else {
     btnLabel.textContent = 'Cease';
     btnIcon.textContent = '✦';
-    browserSpeechTimeout = setTimeout(() => { browserSpeechTimeout = null; speakWithBrowser(); }, 800);
+    browserSpeechTimeout = setTimeout(() => { browserSpeechTimeout = null; speakWithBrowser(mySession); }, 800);
   }
 }
 
